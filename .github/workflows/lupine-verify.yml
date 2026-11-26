@@ -19,8 +19,19 @@ on:
       display_name:
         description: "Name on the leaderboard"
         default: "lupinemachines"
+      export:
+        description: "17M only: after a whole build, export it and compare with the reference (2 to 3 h, about 145 GB of memory)"
+        type: boolean
+        default: false
+      sign:
+        description: "With export: sign the joint statement in advance (takes effect only if the export matches)"
+        type: boolean
+        default: false
+      timeout_minutes:
+        description: "The job's time limit (GitHub's default is 360)"
+        default: "360"
       budget_minutes:
-        description: "Stop the build after this many minutes, so the job can report before the job time limit"
+        description: "Stop the build after this many minutes, so the job can export and report before the time limit"
         default: "315"
       lean_threads:
         description: "Optional cap on parallel Lean jobs (LEAN_NUM_THREADS), if memory runs out; empty = all cores"
@@ -32,10 +43,11 @@ permissions:
 jobs:
   build:
     runs-on: lupine
-    timeout-minutes: 360
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
     env:
       PROOF: ${{ inputs.proof }}
       POST: ${{ inputs.post }}
+      EXPORT: ${{ inputs.export }}
       DISPLAY_NAME: ${{ inputs.display_name }}
       RAH_CPU_LABEL: Lupine CI
       GH_TOKEN: ${{ inputs.post && secrets.RAH_GH_TOKEN || '' }}
@@ -112,6 +124,14 @@ jobs:
             if [ $((tick % 20)) -eq 0 ]; then .github/workflows/publish.sh || true; fi
           done
 
+      - name: Export (Level 2)
+        if: inputs.export
+        env:
+          SIGN: ${{ inputs.sign }}
+        run: |
+          if [ "$SIGN" = true ]; then python3 -I cli/riemann-at-home sign --when-done --proof 17m; fi
+          python3 -I cli/riemann-at-home export --proof 17m
+
       # The runner is gone after this job, so each build is finished here: a final record (posted when `post` is on).
       - name: Final records, logs and page snapshot
         if: always()
@@ -150,7 +170,7 @@ jobs:
           AXIOMS = ["Classical.choice", "Quot.sound", "propext"]
           want = {"300k": ["300k"], "17m": ["17m"], "both": ["300k", "17m"]}[os.environ["PROOF"]]
           out = os.path.join(os.environ["RUNNER_TEMP"], "riemann-at-home")
-          rows, bad, machine = [], [], None
+          rows, bad, notes, machine = [], [], [], None
           for p in want:
               recs = sorted(glob.glob(f"{out}/{p}/records/*.json"))
               r = json.load(open(recs[-1])) if recs else {}
@@ -161,13 +181,20 @@ jobs:
                           f"{'yes' if whole else 'no'} | {', '.join(ax) if ax else '-'} |")
               if not whole:
                   bad.append(f"{p}: {n:,} of {N[p]:,} modules" + (f", axioms {ax}" if ax else ", no axiom check"))
+              if p == "17m" and os.environ["EXPORT"] == "true":
+                  sha = r.get("export_sha256")
+                  notes.append(f"17M export: {'reproduces the reference, sha256 ' + sha if sha else 'no matching export'}"
+                               + (", joint statement signed" if r.get("sign_statement") else ""))
+                  if not sha:
+                      bad.append("17m: the export did not reproduce the reference")
           text = ["### Riemann@home on a Lupine runner", ""]
           if machine:
               text += [f"{machine.get('cpu')}, {machine.get('cores')} cores, {machine.get('os')}", ""]
           text += ["| proof | modules | build time | whole, three axioms only | axioms |", "|---|---|---|---|---|"] + rows
+          text += [""] + notes
           open(os.environ["GITHUB_STEP_SUMMARY"], "a").write("\n".join(text) + "\n")
           print("\n".join(text))
           if bad:
-              print("::error::not a whole proof: " + "; ".join(bad))
+              print("::error::not verified: " + "; ".join(bad))
               sys.exit(1)
           EOF

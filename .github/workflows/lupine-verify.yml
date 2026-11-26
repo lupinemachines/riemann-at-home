@@ -1,0 +1,175 @@
+# Builds the Lean proof with the volunteer tool on a Lupine CI runner (runs-on: lupine).
+# The job passes only when every chosen proof is whole and its theorems use exactly the three standard axioms.
+# The tool is upstream's, except that records name the platform in front of the chip (RAH_CPU_LABEL).
+# Nothing is posted to Riemann@home unless `post` is on and the RAH_GH_TOKEN secret holds a GitHub login to post as.
+name: verify on lupine
+
+on:
+  workflow_dispatch:
+    inputs:
+      proof:
+        description: "Which proof: 300k (the new one), 17m (the original, may not fit the 6 h job limit), or both"
+        type: choice
+        options: ["300k", "17m", "both"]
+        default: "300k"
+      post:
+        description: "Post progress to Riemann@home as the RAH_GH_TOKEN account (a public pull request)"
+        type: boolean
+        default: false
+      display_name:
+        description: "Name on the leaderboard"
+        default: "lupinemachines"
+      budget_minutes:
+        description: "Stop the build after this many minutes, so the job can report before the job time limit"
+        default: "315"
+      lean_threads:
+        description: "Optional cap on parallel Lean jobs (LEAN_NUM_THREADS), if memory runs out; empty = all cores"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: lupine
+    timeout-minutes: 360
+    env:
+      PROOF: ${{ inputs.proof }}
+      POST: ${{ inputs.post }}
+      DISPLAY_NAME: ${{ inputs.display_name }}
+      RAH_CPU_LABEL: Lupine CI
+      GH_TOKEN: ${{ inputs.post && secrets.RAH_GH_TOKEN || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner
+        run: |
+          echo "cpus: $(nproc)"
+          grep -m1 "model name" /proc/cpuinfo
+          free -g | sed -n 1,2p
+          df -h /opt
+          python3 --version
+          echo "tool: $(python3 -I cli/riemann-at-home --version), cli/ last changed in $(git log -1 --format=%H -- cli/)"
+
+      - name: GitHub login for posting
+        if: inputs.post
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::error::post is on but the RAH_GH_TOKEN secret is not set"; exit 1; fi
+          if ! command -v gh >/dev/null; then
+            sudo mkdir -p -m 755 /etc/apt/keyrings
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq gh
+          fi
+          gh auth setup-git          # the tool pushes with git; let it use the same login
+          echo "posting as $(gh api user --jq .login)"
+
+      - name: Setup (official sources, pinned Lean, Mathlib cache)
+        run: |
+          sudo mkdir -p /opt/riemann-at-home
+          sudo chown "$(id -u):$(id -g)" /opt/riemann-at-home
+          python3 -I cli/riemann-at-home setup --proof "$PROOF"
+          if [ "$POST" = true ]; then
+            python3 -I cli/riemann-at-home submit --agree --name "$DISPLAY_NAME"
+          else
+            python3 -I cli/riemann-at-home name "$DISPLAY_NAME"
+          fi
+
+      - name: Build
+        env:
+          BUDGET_MINUTES: ${{ inputs.budget_minutes }}
+          LEAN_THREADS: ${{ inputs.lean_threads }}
+        run: |
+          rah() { python3 -I cli/riemann-at-home "$@"; }
+          # A build is running while its supervisor's pid file names a live process (17M, then 300K).
+          running() {
+            for f in "$HOME/.riemann-at-home/logs/build.pid" "$HOME/.riemann-at-home/300k/logs/build.pid"; do
+              if [ -s "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null; then return 0; fi
+            done
+            return 1
+          }
+          if [ -n "$LEAN_THREADS" ]; then export LEAN_NUM_THREADS="$LEAN_THREADS"; fi
+          rah build --full
+          deadline=$(( $(date +%s) + BUDGET_MINUTES * 60 ))
+          idle=0; tick=0
+          # Two quiet checks in a row end the wait: with "both", the 17M build starts by itself after 300K.
+          while [ "$idle" -lt 2 ]; do
+            sleep 30
+            if ! running; then idle=$((idle + 1)); continue; fi
+            idle=0; tick=$((tick + 1))
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::warning::Stopped the build after $BUDGET_MINUTES minutes, to report before the job time limit."
+              rah stop --proof 300k || true
+              rah stop --proof 17m || true
+              break
+            fi
+            if [ $((tick % 10)) -eq 0 ]; then
+              echo "--- $(date -u +%FT%TZ)"
+              rah status || true
+            fi
+            # Every 10 minutes, the newest record on one line, so progress can be posted by whoever reads this log.
+            if [ $((tick % 20)) -eq 0 ]; then
+              for d in "$HOME/.riemann-at-home" "$HOME/.riemann-at-home/300k"; do
+                r=$(ls "$d"/records/*.json 2>/dev/null | tail -1)
+                if [ -n "$r" ]; then echo "RECORD $(base64 -w0 "$r")"; fi
+              done
+            fi
+          done
+
+      # The runner is gone after this job, so each build is finished here: a final record (posted when `post` is on).
+      - name: Final records, logs and page snapshot
+        if: always()
+        run: |
+          python3 -I cli/riemann-at-home status || true
+          out="$RUNNER_TEMP/riemann-at-home"
+          mkdir -p "$out"
+          for p in 300k 17m; do
+            d="$HOME/.riemann-at-home"
+            if [ "$p" = 300k ]; then d="$d/300k"; fi
+            if [ ! -f "$d/build_id" ]; then continue; fi
+            timeout 30m python3 -I cli/riemann-at-home finish --force --proof "$p" || true
+            timeout 5m python3 -I cli/riemann-at-home page --once --proof "$p" >/dev/null || true
+            mkdir -p "$out/$p"
+            for x in logs records page; do
+              if [ -d "$d/$x" ]; then cp -r "$d/$x" "$out/$p/"; fi
+            done
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: riemann-at-home-${{ inputs.proof }}
+          path: ${{ runner.temp }}/riemann-at-home
+          if-no-files-found: warn
+
+      - name: Verdict
+        if: always()
+        run: |
+          python3 -I - <<'EOF'
+          import glob, json, os, sys
+          N = {"300k": 803, "17m": 175187}
+          AXIOMS = ["Classical.choice", "Quot.sound", "propext"]
+          want = {"300k": ["300k"], "17m": ["17m"], "both": ["300k", "17m"]}[os.environ["PROOF"]]
+          out = os.path.join(os.environ["RUNNER_TEMP"], "riemann-at-home")
+          rows, bad, machine = [], [], None
+          for p in want:
+              recs = sorted(glob.glob(f"{out}/{p}/records/*.json"))
+              r = json.load(open(recs[-1])) if recs else {}
+              machine = machine or r.get("machine")
+              n, ax = r.get("modules_compiled", 0), r.get("axioms")
+              whole = bool(r.get("whole_proof")) and n == N[p] and sorted(ax or []) == AXIOMS
+              rows.append(f"| {p} | {n:,} / {N[p]:,} | {r.get('busy_seconds', 0) / 3600:.2f} h | "
+                          f"{'yes' if whole else 'no'} | {', '.join(ax) if ax else '-'} |")
+              if not whole:
+                  bad.append(f"{p}: {n:,} of {N[p]:,} modules" + (f", axioms {ax}" if ax else ", no axiom check"))
+          text = ["### Riemann@home on a Lupine runner", ""]
+          if machine:
+              text += [f"{machine.get('cpu')}, {machine.get('cores')} cores, {machine.get('os')}", ""]
+          text += ["| proof | modules | build time | whole, three axioms only | axioms |", "|---|---|---|---|---|"] + rows
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write("\n".join(text) + "\n")
+          print("\n".join(text))
+          if bad:
+              print("::error::not a whole proof: " + "; ".join(bad))
+              sys.exit(1)
+          EOF

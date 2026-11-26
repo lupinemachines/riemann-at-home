@@ -408,8 +408,10 @@ def machine() -> dict:
     else:
         m = re.search(r"^model name\s*:\s*(.+)$", read(Path("/proc/cpuinfo")), re.M)
         cpu = m[1].strip() if m else ""
+    cpu = cpu or platform.processor() or ""
+    label = os.environ.get("RAH_CPU_LABEL", "").strip()   # this fork: name the platform in front of the chip
     return {"os": f"{platform.system()} {platform.release()}", "arch": platform.machine(),
-            "cpu": cpu or platform.processor() or "", "cores": int(os.cpu_count() or 0)}
+            "cpu": (f"{label} ({cpu})" if cpu else label) if label else cpu, "cores": int(os.cpu_count() or 0)}
 
 
 def events(ctx: Ctx) -> list:

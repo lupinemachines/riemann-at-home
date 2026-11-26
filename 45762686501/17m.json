@@ -13,13 +13,41 @@
     "cores": 128
   },
   "started": "2026-11-26T05:38:03Z",
-  "recorded": "2026-11-26T15:30:24Z",
-  "busy_seconds": 35541,
-  "modules_compiled": 175183,
-  "bitmap_b64": "H4sIAAAAAAACA+3QAQ0AAAgDIPuH9i9gAgcRSAAAAAAAAAAAAAAAAAAAAAAAAAAA4JFVwGUKTXd484tVAAA=",
-  "olean_digest": "d906058e8ab3a51fee65728440837da2c793075ce9b557696c6ef6b9d7db6130",
-  "whole_proof": false,
-  "axioms": null,
-  "final": false,
-  "display_name": "lupine.sh"
+  "recorded": "2026-11-26T18:37:17Z",
+  "busy_seconds": 35620,
+  "modules_compiled": 175187,
+  "bitmap_b64": "H4sIAAAAAAACA+3BMQ0AAAACoNP+ibWHA1oAAAAAAAAAAAAAAAAAAAAAAAAAAIB3GZLmPp+LVQAA",
+  "olean_digest": "9b97ad8ad971869974c9b089136e8c990b24439e38fcc9b10e7d7066f0a0fa92",
+  "whole_proof": true,
+  "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+  ],
+  "final": true,
+  "display_name": "lupine.sh",
+  "export_progress": {
+    "bytes": 61570595788,
+    "seconds": 4468,
+    "left_seconds": null,
+    "peak_memory_gb": 154.96,
+    "done": true
+  },
+  "export_sha256": "5ea74b912147c5c93cc2b6d70cc727cf908df2f62ac6a20480a3fa02f6be244e",
+  "export_bytes": 61570595788,
+  "checkers": [
+    {
+      "name": "con-leche",
+      "version": "con-leche cfa7cd1dff66",
+      "result": "accept",
+      "seconds": 230
+    },
+    {
+      "name": "nanoda",
+      "version": "nanoda 0da9f98feadd",
+      "result": "accept",
+      "seconds": 2066
+    }
+  ],
+  "sign_statement": true
 }

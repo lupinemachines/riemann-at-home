@@ -18,7 +18,7 @@ on:
         default: false
       display_name:
         description: "Name on the leaderboard"
-        default: "lupinemachines"
+        default: "lupine.sh"
       export:
         description: "17M only: after a whole build, export it and compare with the reference (2 to 3 h, about 145 GB of memory)"
         type: boolean

@@ -27,6 +27,11 @@ on:
         description: "With export: sign the joint statement in advance (takes effect only if the export matches)"
         type: boolean
         default: false
+      recheck:
+        description: "With export: re-check the export with independent checkers (Level 3; hours each, 62 GB more disk)"
+        type: choice
+        options: ["none", "con-leche", "nanoda", "both"]
+        default: "none"
       timeout_minutes:
         description: "The job's time limit (GitHub's default is 360)"
         default: "360"
@@ -48,6 +53,7 @@ jobs:
       PROOF: ${{ inputs.proof }}
       POST: ${{ inputs.post }}
       EXPORT: ${{ inputs.export }}
+      RECHECK: ${{ inputs.recheck }}
       DISPLAY_NAME: ${{ inputs.display_name }}
       RAH_CPU_LABEL: Lupine CI
       GH_TOKEN: ${{ inputs.post && secrets.RAH_GH_TOKEN || '' }}
@@ -62,6 +68,28 @@ jobs:
           df -h /opt
           python3 --version
           echo "tool: $(python3 -I cli/riemann-at-home --version), cli/ last changed in $(git log -1 --format=%H -- cli/)"
+
+      # First, so a checker that doesn't build fails the job in minutes, not after the build and the export.
+      - name: Build the independent checkers
+        if: inputs.recheck != 'none'
+        env:
+          RECHECK: ${{ inputs.recheck }}
+        run: |
+          mkdir -p "$HOME/checkers"
+          cd "$HOME/checkers"
+          if [ "$RECHECK" = con-leche ] || [ "$RECHECK" = both ]; then
+            curl -sSfL --retry 3 https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
+            sh elan-init.sh -y --default-toolchain none
+            git clone -q --depth 1 https://github.com/leanprover/con-leche
+            (cd con-leche && git rev-parse HEAD && "$HOME/.elan/bin/lake" build con-leche)
+            con-leche/.lake/build/bin/con-leche --version
+          fi
+          if [ "$RECHECK" = nanoda ] || [ "$RECHECK" = both ]; then
+            curl -sSf --retry 3 https://sh.rustup.rs | sh -s -- -y --profile minimal
+            git clone -q --depth 1 https://github.com/ammkrn/nanoda_lib
+            (cd nanoda_lib && git rev-parse HEAD && "$HOME/.cargo/bin/cargo" build --release)
+            test -x nanoda_lib/target/release/nanoda_bin
+          fi
 
       - name: GitHub login for posting
         if: inputs.post
@@ -128,9 +156,29 @@ jobs:
         if: inputs.export
         env:
           SIGN: ${{ inputs.sign }}
+          REPO_TOKEN: ${{ github.token }}
         run: |
           if [ "$SIGN" = true ]; then python3 -I cli/riemann-at-home sign --when-done --proof 17m; fi
           python3 -I cli/riemann-at-home export --proof 17m
+          .github/workflows/publish.sh || true
+
+      # Each checker gets the export saved to disk once (the tool exports again for that), then runs alone.
+      - name: Re-check the export independently (Level 3)
+        if: inputs.export && inputs.recheck != 'none'
+        env:
+          RECHECK: ${{ inputs.recheck }}
+          REPO_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$RECHECK" = con-leche ] || [ "$RECHECK" = both ]; then
+            python3 -I cli/riemann-at-home recheck --con-leche --proof 17m \
+              --checker "$HOME/checkers/con-leche/.lake/build/bin/con-leche" || echo "::warning::con-leche did not accept the export"
+            .github/workflows/publish.sh || true
+          fi
+          if [ "$RECHECK" = nanoda ] || [ "$RECHECK" = both ]; then
+            python3 -I cli/riemann-at-home recheck --nanoda --proof 17m \
+              --checker "$HOME/checkers/nanoda_lib/target/release/nanoda_bin" || echo "::warning::nanoda did not accept the export"
+            .github/workflows/publish.sh || true
+          fi
 
       # The runner is gone after this job, so each build is finished here: a final record (posted when `post` is on).
       - name: Final records, logs and page snapshot
@@ -187,6 +235,13 @@ jobs:
                                + (", joint statement signed" if r.get("sign_statement") else ""))
                   if not sha:
                       bad.append("17m: the export did not reproduce the reference")
+                  want_checkers = {"none": [], "both": ["con-leche", "nanoda"]}.get(os.environ["RECHECK"], [os.environ["RECHECK"]])
+                  got = {c.get("name"): c for c in r.get("checkers") or []}
+                  for c in want_checkers:
+                      e = got.get(c)
+                      notes.append(f"17M re-check with {c}: " + (f"{e.get('result')} in {e.get('seconds', 0) / 3600:.1f} h ({e.get('version')})" if e else "no verdict"))
+                      if not e or e.get("result") != "accept":
+                          bad.append(f"17m: {c} did not accept the export")
           text = ["### Riemann@home on a Lupine runner", ""]
           if machine:
               text += [f"{machine.get('cpu')}, {machine.get('cores')} cores, {machine.get('os')}", ""]

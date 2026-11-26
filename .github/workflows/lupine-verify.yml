@@ -82,7 +82,7 @@ jobs:
             sh elan-init.sh -y --default-toolchain none
             git clone -q --depth 1 https://github.com/leanprover/con-leche
             (cd con-leche && git rev-parse HEAD && "$HOME/.elan/bin/lake" build con-leche)
-            con-leche/.lake/build/bin/con-leche --version
+            con-leche/.lake/build/bin/con-leche --help >/dev/null
           fi
           if [ "$RECHECK" = nanoda ] || [ "$RECHECK" = both ]; then
             curl -sSf --retry 3 https://sh.rustup.rs | sh -s -- -y --profile minimal

@@ -27,7 +27,7 @@ on:
         default: ""
 
 permissions:
-  contents: read
+  contents: write   # the newest record goes to this repo's `records` branch (see publish.sh)
 
 jobs:
   build:
@@ -79,6 +79,7 @@ jobs:
       - name: Build
         env:
           BUDGET_MINUTES: ${{ inputs.budget_minutes }}
+          REPO_TOKEN: ${{ github.token }}
           LEAN_THREADS: ${{ inputs.lean_threads }}
         run: |
           rah() { python3 -I cli/riemann-at-home "$@"; }
@@ -108,18 +109,14 @@ jobs:
               echo "--- $(date -u +%FT%TZ)"
               rah status || true
             fi
-            # Every 10 minutes, the newest record on one line, so progress can be posted by whoever reads this log.
-            if [ $((tick % 20)) -eq 0 ]; then
-              for d in "$HOME/.riemann-at-home" "$HOME/.riemann-at-home/300k"; do
-                r=$(ls "$d"/records/*.json 2>/dev/null | tail -1)
-                if [ -n "$r" ]; then echo "RECORD $(base64 -w0 "$r")"; fi
-              done
-            fi
+            if [ $((tick % 20)) -eq 0 ]; then .github/workflows/publish.sh || true; fi
           done
 
       # The runner is gone after this job, so each build is finished here: a final record (posted when `post` is on).
       - name: Final records, logs and page snapshot
         if: always()
+        env:
+          REPO_TOKEN: ${{ github.token }}
         run: |
           python3 -I cli/riemann-at-home status || true
           out="$RUNNER_TEMP/riemann-at-home"
@@ -135,6 +132,7 @@ jobs:
               if [ -d "$d/$x" ]; then cp -r "$d/$x" "$out/$p/"; fi
             done
           done
+          .github/workflows/publish.sh || true
 
       - uses: actions/upload-artifact@v4
         if: always()

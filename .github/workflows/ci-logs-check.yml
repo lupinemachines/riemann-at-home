@@ -1,0 +1,29 @@
+name: ci logs check
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: how long to keep printing
+        default: "240"
+permissions:
+  contents: read
+jobs:
+  print:
+    runs-on: lupine
+    timeout-minutes: 15
+    steps:
+      - name: Masked value
+        run: |
+          echo "::add-mask::steplog-secret-7f3a91"
+          echo "the masked value is steplog-secret-7f3a91"
+      - name: Token
+        env:
+          TOKEN: ${{ github.token }}
+        run: echo "token is $TOKEN"
+      - name: Lines
+        env:
+          SECONDS_TO_RUN: ${{ inputs.seconds }}
+        run: |
+          for i in $(seq 1 "$SECONDS_TO_RUN"); do echo "line $i $(date -u +%T) $(head -c 200 /dev/zero | tr '\0' x)"; sleep 1; done
+      - name: Quiet
+        run: sleep 90; echo "after the quiet stretch"
